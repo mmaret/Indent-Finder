@@ -14,10 +14,12 @@ import os, glob
 import unittest 
 from pprint import pprint
 
+TEST_DEFAULT_RESULT=('',0)
+
 class Test_many_files( unittest.TestCase ):
 
     def check_file( self, fname, result, expected_vim_result ):
-        ifi = indent_finder.IndentFinder()
+        ifi = indent_finder.IndentFinder( TEST_DEFAULT_RESULT )
         indent_finder.DEFAULT_TAB_WIDTH = 13
         ifi.parse_file( fname )
         res = str(ifi)
@@ -28,10 +30,11 @@ class Test_many_files( unittest.TestCase ):
         l = []
         l += glob.glob( 'test_files/space4/*.py' )
         l += glob.glob( 'test_files/space4/*.java' )
+        l += glob.glob( 'test_files/space4/*.vim' )
         for f in l:
             print 'checking: ', f
             self.check_file( f , 'space 4', 
-              'set sts=4 | set tabstop=4 | set expandtab | set shiftwidth=4' )
+              'set sts=4 | set tabstop=4 | set expandtab | set shiftwidth=4 " (space 4)' )
 
     def test_file_space2( self ):
         l = []
@@ -39,7 +42,7 @@ class Test_many_files( unittest.TestCase ):
         for f in l:
             print 'checking: ', f
             self.check_file( f , 'space 2', 
-              'set sts=2 | set tabstop=2 | set expandtab | set shiftwidth=2' )
+              'set sts=2 | set tabstop=2 | set expandtab | set shiftwidth=2 " (space 2)' )
 
     def test_file_tab( self ):
         l = []
@@ -49,7 +52,7 @@ class Test_many_files( unittest.TestCase ):
         for f in l:
             print 'checking: ', f
             self.check_file( f , 'tab %d' % indent_finder.DEFAULT_TAB_WIDTH,
-            'set sts=0 | set tabstop=%d | set noexpandtab | set shiftwidth=%d'%
+            'set sts=0 | set tabstop=%d | set noexpandtab | set shiftwidth=%d " (tab)'%
               (indent_finder.DEFAULT_TAB_WIDTH, 
                 indent_finder.DEFAULT_TAB_WIDTH) )
 
@@ -59,7 +62,7 @@ class Test_many_files( unittest.TestCase ):
         for f in l:
             print 'checking: ', f
             self.check_file( f, 'mixed tab 8 space 4',
-              'set sts=4 | set tabstop=8 | set noexpandtab | set shiftwidth=4' )
+              'set sts=4 | set tabstop=8 | set noexpandtab | set shiftwidth=4 " (mixed 4)' )
         
 
 if __name__ == "__main__":

@@ -28,6 +28,8 @@ set sts=0 | set tabstop=4 | set noexpandtab | set shiftwidth=4
 
 """
 
+VERSION='1.4'
+
 ### Used when indentation is tab, to set tabstop in vim
 DEFAULT_TAB_WIDTH = 4
 
@@ -49,6 +51,7 @@ DEFAULT_VERBOSITY = VERBOSE_QUIET
 
 ###
 class LineType:
+    NoIndent        = 'NoIndent'
     SpaceOnly       = 'SpaceOnly'
     TabOnly         = 'TabOnly'
     Mixed           = 'Mixed'
@@ -73,33 +76,48 @@ class IndentFinder:
     It scans each line of the entry file for a space character (white space or
     tab) repeated until a non space character is found. Such a line
     is considered to be a properly indented line of code. Blank lines and
-    comments line are ignored. Lines coming after a line ending in '\\' have
-    higher chance of being not properly indented, and are thus ignored too.
-    
-    An array stores the number of lines that have a specific indentation: tab,
-    number of spaces between 2 and 8. For space indentation, a line is
-    considered indented with a base of x if the number of spaces modulo x
-    yields zero. Thus, an indentation of 4 spaces increases the 2-spaces and
-    the 4-spaces indentation line count.
+    comments line (starting with # or /* or * ) are ignored. Lines coming 
+    after a line ending in '\\' have higher chance of being not properly 
+    indented, and are thus ignored too.
 
-    To improve the heuristics, the steps of increments in the indentation
-    give an extra bonus of 10 points. For example:
-    <4 space>some line
-    <8 space     >some line
-    is a strong hint of an indentation of 4 and gets 4 an 10 points bonus
+    Only the increment in indentation are fed in. Dedentation or maintaining
+    the same indentation is not taken into account when analysing a file. Increment
+    in indentation from zero indentation to some indentation is also ignored because
+    it's wrong in many cases (header file with many structures for example, do not always
+    obey the indentation of the rest of the code).
 
-    At the end of the scan phase, the indentation that was used with the
-    highest number of lines is taken. For spaces, to avoid the problemes of
-    multiples like 2 and 4, the highest indentation number is preferred. A
-    lower number is chosen if it reports at least 10% more lines with this
-    indentation.
+    Each line is analysed as:
+    - SpaceOnly: indentation of more than 8 space
+    - TabOnly: indentation of tab only
+    - Mixed: indentation of tab, then less than 8 spaces
+    - BeginSpace: indentation of less than 8 space, that could be either a mixed indentation
+        or a pure space indentation.
+    - non-significant
+
+    Then two consecutive significant lines are then considered. The only valid combinations are:
+    - (NoIndent, BeginSpace)    => space or mixed
+    - (NoIndent, Tab)           => tab
+    - (BeginSpace, BeginSpace)  => space or mixed
+    - (BeginSpace, SpaceOnly)   => space
+    - (SpaceOnly, SpaceOnly)    => space
+    - (TabOnly, TabOnly)        => tab
+    - (TabOnly, Mixed)          => mixed
+    - (Mixed, TabOnly)          => mixed
+
+    The increment in number of spaces is then recorded.
+
+    At the end, the number of lines with space indentation, mixed space and tab indentation
+    are compared and a decision is made.
+
+    If no decision can be made, DEFAULT_RESULT is returned.
 
     If IndentFinder ever reports wrong indentation, send me immediately a
     mail, if possible with the offending file.
     """
 
-    def __init__(self):
+    def __init__(self, default_result=DEFAULT_RESULT):
         self.clear()
+        self.default_result = default_result
 
     VERBOSITY = DEFAULT_VERBOSITY
 
@@ -128,6 +146,29 @@ class IndentFinder:
         self.skip_next_line = False
         self.previous_line_info = None
 
+    def analyse_line( self, line ):
+        if line[-1:] == '\n':
+            line = line[:-1]
+        deepdbg( 'analyse_line: "%s"' % line.replace(' ', '.' ).replace('\t','\\t') )
+        self.nb_processed_lines += 1
+
+        skip_current_line = self.skip_next_line
+        self.skip_next_line = False
+        if line[-1:] == '\\': 
+            deepdbg( 'analyse_line: Ignoring next line!' )
+            # skip lines after lines ending in \
+            self.skip_next_line = True
+
+        if skip_current_line: 
+            deepdbg( 'analyse_line: Ignoring current line!' )
+            return
+
+        ret = self.analyse_line_indentation( line )
+        if ret:
+            self.nb_indent_hint += 1
+        deepdbg( 'analyse_line: Result of line analysis: %s' % str(ret) )
+        return ret
+
     def analyse_line_type( self, line ):
         '''Analyse the type of line and return (LineType, <indentation part of
         the line>).
@@ -139,6 +180,9 @@ class IndentFinder:
         tab_part = ''
         space_part = ''
 
+        if len(line) > 0 and line[0] != ' ' and line[0] != '\t':
+            return (LineType.NoIndent, '') 
+
         mo = self.indent_re.match( line )
         if not mo: 
             deepdbg( 'analyse_line_type: line is not indented' )
@@ -146,16 +190,8 @@ class IndentFinder:
 
         indent_part = mo.group(1)
         text_part = mo.group(2)
-        if len(indent_part) and not indent_part[0] in '\t ':
-            # no indentation at all, group 1 actually refers to the text
-            text_part = indent_part
-            indent_part = ''
-
-        if not len(text_part):
-            # skip empty lines
-            return None
-
-        deepdbg( 'indent_part="%s" text_part="%s"' % 
+            
+        deepdbg( 'analyse_line_type: indent_part="%s" text_part="%s"' % 
             (indent_part.replace(' ', '.').replace('\t','\\t').replace('\n', '\\n' ),
                 text_part ) )
 
@@ -196,54 +232,34 @@ class IndentFinder:
 
         assert False, 'We should never get there !'
 
-    def analyse_line( self, line ):
-        if line[-1:] == '\n':
-            line = line[:-1]
-        deepdbg( 'Analysing: "%s"' % line.replace(' ', '.' ).replace('\t','\\t') )
-        self.nb_processed_lines += 1
-
-        skip_current_line = self.skip_next_line
-        self.skip_next_line = False
-        if line[-1:] == '\\': 
-            deepdbg( 'Ignoring next line!' )
-            # skip lines after lines ending in \
-            self.skip_next_line = True
-
-        if skip_current_line: 
-            deepdbg( 'Ignoring current line!' )
-            return
-
-        ret = self.analyse_line_indentation( line )
-        if ret:
-            self.nb_indent_hint += 1
-        deepdbg( 'Result of line analysis: %s' % str(ret) )
-        return ret
-
     def analyse_line_indentation( self, line ):
         previous_line_info = self.previous_line_info
         current_line_info = self.analyse_line_type( line )
         self.previous_line_info = current_line_info
 
         if current_line_info == None or previous_line_info == None:
-            deepdbg('Not enough line info to analyse line: %s, %s' % (str(previous_line_info), str(current_line_info)))
+            deepdbg('analyse_line_indentation: Not enough line info to analyse line: %s, %s' % (str(previous_line_info), str(current_line_info)))
             return 
         
         t = (previous_line_info[0], current_line_info[0])
-        deepdbg( 'Indent analysis: %s %s' % t )
-        if t == (LineType.TabOnly, LineType.TabOnly):
+        deepdbg( 'analyse_line_indentation: Indent analysis: %s %s' % t )
+        if (t == (LineType.TabOnly, LineType.TabOnly)
+            or t == (LineType.NoIndent, LineType.TabOnly) ):
             if len(current_line_info[1]) - len(previous_line_info[1]) == 1 :
                 self.lines['tab'] += 1
                 return 'tab'
 
-        elif t == (LineType.SpaceOnly, LineType.SpaceOnly) \
-            or t == (LineType.BeginSpace, LineType.SpaceOnly):
+        elif (t == (LineType.SpaceOnly, LineType.SpaceOnly)
+              or t == (LineType.BeginSpace, LineType.SpaceOnly)
+              or t == (LineType.NoIndent, LineType.SpaceOnly) ):
             nb_space = len(current_line_info[1]) - len(previous_line_info[1])
             if 1 < nb_space <= 8:
                 key = 'space%d' % nb_space 
                 self.lines[key] += 1
                 return key
 
-        elif t == (LineType.BeginSpace, LineType.BeginSpace):
+        elif (t == (LineType.BeginSpace, LineType.BeginSpace)
+              or t == (LineType.NoIndent, LineType.BeginSpace) ):
             nb_space = len(current_line_info[1]) - len(previous_line_info[1])
             if 1 < nb_space <= 8:
                 key1 = 'space%d' % nb_space 
@@ -296,9 +312,52 @@ class IndentFinder:
         max_line_mixed = max( [ self.lines['mixed%d'%i] for i in range(2,9) ] )
         max_line_tab = self.lines['tab']
 
+        dbg( 'max_line_space: %d' % max_line_space )
+        dbg( 'max_line_mixed: %d' % max_line_mixed )
+        dbg( 'max_line_tab: %d' % max_line_tab )
+
+        ### Result analysis
+        #
+        # 1. Space indented file
+        #    - lines indented with less than 8 space will fill mixed and space array
+        #    - lines indented with 8 space or more will fill only the space array
+        #    - almost no lines indented with tab
+        #
+        # => more lines with space than lines with mixed
+        # => more a lot more lines with space than tab
+        #
+        # 2. Tab indented file
+        #    - most lines will be tab only
+        #    - very few lines as mixed
+        #    - very few lines as space only
+        #
+        # => a lot more lines with tab than lines with mixed
+        # => a lot more lines with tab than lines with space
+        #
+        # 3. Mixed tab/space indented file
+        #    - some lines are tab-only (lines with exactly 8 step indentation)
+        #    - some lines are space only (less than 8 space)
+        #    - all other lines are mixed
+        #
+        # If mixed is tab + 2 space indentation:
+        #     - a lot more lines with mixed than with tab
+        # If mixed is tab + 4 space indentation
+        #     - as many lines with mixed than with tab
+        #
+        # If no lines exceed 8 space, there will be only lines with space
+        # and tab but no lines with mixed. Impossible to detect mixed indentation
+        # in this case, the file looks like it's actually indented as space only
+        # and will be detected so.
+        #
+        # => same or more lines with mixed than lines with tab only
+        # => same or more lines with mixed than lines with space only
+        #
+
+
         result = None
-        if (max_line_space * 1.1 >= max_line_mixed) and (max_line_space > max_line_tab):
-            # this is space based indentation
+
+        # Detect space indented file
+        if max_line_space >= max_line_mixed and max_line_space > max_line_tab:
             nb = 0
             indent_value = None
             for i in range(8,1,-1):
@@ -307,12 +366,16 @@ class IndentFinder:
                     nb = self.lines[ 'space%d' % indent_value ]
 
             if indent_value == None: # no lines
-                result = DEFAULT_RESULT
+                result = self.default_result
             else:
                 result = ('space', indent_value )
 
-        elif max_line_mixed > max_line_tab:
-            # this is mixed mode indentation
+        # Detect tab files
+        elif max_line_tab > max_line_mixed and max_line_tab > max_line_space:
+            result = ('tab', DEFAULT_TAB_WIDTH )
+
+        # Detect mixed files
+        elif max_line_mixed >= max_line_tab and max_line_mixed > max_line_space:
             nb = 0
             indent_value = None
             for i in range(8,1,-1):
@@ -321,14 +384,13 @@ class IndentFinder:
                     nb = self.lines[ 'mixed%d' % indent_value ]
 
             if indent_value == None: # no lines
-                result = DEFAULT_RESULT
+                result = self.default_result
             else:
                 result = ('mixed', (8,indent_value) )
 
-
         else:
-            # space based indentation 
-            result = ('tab', DEFAULT_TAB_WIDTH) 
+            # not enough information to make a decision
+            result = self.default_result
 
         info( "Result: %s" % str( result ) )
         return result
@@ -343,14 +405,15 @@ class IndentFinder:
         
 
     def vim_output( self ):
-        indent_type, n = self.results()
+        result = self.results()
+        indent_type, n = result
         if indent_type == "space":
             # spaces: 
             #   => set sts to the number of spaces
             #   => set tabstop to the number of spaces
             #   => expand tabs to spaces
             #   => set shiftwidth to the number of spaces
-            return "set sts=%d | set tabstop=%d | set expandtab | set shiftwidth=%d" % (n,n,n)
+            return "set sts=%d | set tabstop=%d | set expandtab | set shiftwidth=%d \" (%s %d)" % (n,n,n,indent_type,n)
 
         elif indent_type == "tab":
             # tab:
@@ -358,7 +421,7 @@ class IndentFinder:
             #   => set tabstop to preferred value
             #   => set expandtab to false
             #   => set shiftwidth to tabstop
-            return "set sts=0 | set tabstop=%d | set noexpandtab | set shiftwidth=%d" % (DEFAULT_TAB_WIDTH, DEFAULT_TAB_WIDTH)
+            return "set sts=0 | set tabstop=%d | set noexpandtab | set shiftwidth=%d \" (%s)" % (DEFAULT_TAB_WIDTH, DEFAULT_TAB_WIDTH, indent_type )
 
         if indent_type == 'mixed':
             tab_indent, space_indent = n
@@ -367,8 +430,7 @@ class IndentFinder:
             #   => set tabstop to tab_indent
             #   => set expandtab to false
             #   => set shiftwidth to space_indent
-            return "set sts=4 | set tabstop=%d | set noexpandtab | set shiftwidth=%d" % (tab_indent,
-space_indent )
+            return "set sts=4 | set tabstop=%d | set noexpandtab | set shiftwidth=%d \" (%s %d)" % (tab_indent, space_indent, indent_type, space_indent )
 
 
 
@@ -377,8 +439,13 @@ def main():
 
     file_list = []
     for opt in sys.argv[1:]:
-        if opt == "--vim-output": VIM_OUTPUT = 1
-        elif opt == "--verbose": IndentFinder.VERBOSITY = VERBOSE_INFO
+        if opt == "--vim-output": 
+            VIM_OUTPUT = 1
+        elif opt == "--verbose" or opt == '-v': 
+            IndentFinder.VERBOSITY += 1
+        elif opt == "--version": 
+            print 'IndentFinder v%s' % VERSION
+            return
         elif opt[0] == "-": 
             print help % sys.argv[0]
             return
